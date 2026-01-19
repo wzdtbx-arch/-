@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>构图大师 - 黄金螺旋专属 & 动态比例构图</title>
+    <style>
+        :root { --bg: #0d0d0d; --accent: #ffffff; --panel: #1a1a1a; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: var(--bg); color: #fff; font-family: sans-serif; overflow: hidden; display: flex; flex-direction: column; }
+        
+        .header { height: 60px; background: var(--panel); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid #222; z-index: 100; }
+        .logo { font-size: 14px; font-weight: bold; letter-spacing: 2px; }
+        .status-info { font-size: 11px; color: #888; }
+
+        .viewport { flex: 1; display: flex; justify-content: center; align-items: center; padding: 30px; position: relative; }
+        #canvas-wrap { position: relative; background: #000; box-shadow: 0 0 40px rgba(0,0,0,0.8); border: 1px solid #333; }
+        canvas { position: absolute; top: 0; left: 0; }
+        #guide-canvas { pointer-events: none; z-index: 10; }
+
+        .controls { background: var(--panel); padding: 20px 30px; display: grid; grid-template-columns: 140px 1fr 180px; gap: 20px; border-top: 1px solid #222; }
+        .group { display: flex; flex-direction: column; gap: 8px; }
+        .label { font-size: 10px; color: #555; text-transform: uppercase; font-weight: bold; }
+
+        .btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+        button { background: #222; border: 1px solid #333; color: #888; padding: 8px 4px; font-size: 11px; cursor: pointer; border-radius: 2px; transition: 0.2s; }
+        button:hover { background: #333; color: #fff; }
+        button.active { background: var(--accent); color: #000; font-weight: bold; border-color: var(--accent); }
+        .ratio-btn { padding: 12px 0; font-weight: bold; }
+        .export-btn { background: #4a1414 !important; color: #ff9999 !important; border: none !important; }
+
+        input[type="range"] { accent-color: var(--accent); cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="logo">PRO COMPOSITION</div>
+    <div class="status-info" id="current-status">比例: 16:9 | 构图: 三分法</div>
+    <button onclick="document.getElementById('fileInput').click()">导入照片</button>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
+</div>
+
+<div class="viewport">
+    <div id="canvas-wrap">
+        <canvas id="photo-canvas"></canvas>
+        <canvas id="guide-canvas"></canvas>
+    </div>
+</div>
+
+<div class="controls">
+    <div class="group">
+        <div class="label">画布比例</div>
+        <div class="btn-grid" style="grid-template-columns: 1fr 1fr;">
+            <button class="r-btn active" onclick="setBaseRatio(16,9,this)">16:9</button>
+            <button class="r-btn" onclick="setBaseRatio(9,16,this)">9:16</button>
+        </div>
+    </div>
+
+    <div class="group">
+        <div class="label">构图算法</div>
+        <div class="btn-grid">
+            <button class="c-btn active" onclick="setComposition('thirds',this)">三分法</button>
+            <button class="c-btn" onclick="setComposition('goldenGrid',this)">黄金分割</button>
+            <button class="c-btn" onclick="setComposition('triangle',this)">黄金三角</button>
+            <button class="c-btn" onclick="setComposition('spiral',this)">黄金螺旋</button>
+            <button class="c-btn" onclick="setComposition('dynamic',this)">动态对称</button>
+            <button class="c-btn" onclick="setComposition('cross',this)">中心十字</button>
+            <button class="c-btn" onclick="setComposition('diagonal',this)">对角线</button>
+            <button class="c-btn" onclick="setComposition('vanishing',this)">消失点</button>
+            <button class="c-btn" onclick="setComposition('cinema',this)">电影遮罩</button>
+        </div>
+    </div>
+
+    <div class="group">
+        <div class="label">工具</div>
+        <div class="btn-grid" style="grid-template-columns: 1fr 1fr;">
+            <button onclick="applyTransform('flipX')">左右翻转</button>
+            <button onclick="applyTransform('flipY')">上下翻转</button>
+            <button onclick="applyTransform('rotate')">旋转90°</button>
+            <button class="export-btn" onclick="exportMergedImage()">导出合并</button>
+        </div>
+        <input type="range" id="opacityRange" min="0" max="1" step="0.1" value="0.7" oninput="render()">
+    </div>
+</div>
+
+<script>
+    const wrap = document.getElementById('canvas-wrap');
+    const pCanvas = document.getElementById('photo-canvas'), gCanvas = document.getElementById('guide-canvas');
+    const pCtx = pCanvas.getContext('2d'), gCtx = gCanvas.getContext('2d');
+    const PHI = 1.61803398875; // 黄金比例常量
+
+    let state = {
+        baseW: 16, baseH: 9, // 基础画布比例 (16:9 或 9:16)
+        currentComp: 'thirds', // 当前构图类型
+        img: null,
+        imgX: 0, imgY: 0, imgScale: 1,
+        flipX: 1, flipY: 1, // 镜像状态 (1 or -1)
+        rotation: 0 // 旋转角度 (0, 90, 180, 270)
+    };
+
+    function init() {
+        resizeCanvas();
+        window.onresize = resizeCanvas;
+        setupImageInteractions();
+    }
+
+    // 根据选择的构图和基础比例调整画布尺寸
+    function resizeCanvas() {
+        const viewW = document.querySelector('.viewport').clientWidth - 60;
+        const viewH = document.querySelector('.viewport').clientHeight - 60;
+        
+        let targetRatio;
+        if (state.currentComp === 'spiral') {
+            targetRatio = PHI; // 黄金螺旋强制使用黄金比例
+        } else {
+            targetRatio = state.baseW / state.baseH; // 其他构图使用基础比例
+        }
+
+        let cw, ch;
+        if (viewW / viewH > targetRatio) {
+            ch = viewH; cw = ch * targetRatio;
+        } else {
+            cw = viewW; ch = cw / targetRatio;
+        }
+
+        wrap.style.width = cw + 'px'; wrap.style.height = ch + 'px';
+        pCanvas.width = gCanvas.width = cw; pCanvas.height = gCanvas.height = ch;
+        render(); // 重新渲染所有内容
+        updateStatus();
+    }
+
+    function setBaseRatio(w, h, btn) {
+        state.baseW = w; state.baseH = h;
+        document.querySelectorAll('.r-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        resizeCanvas(); // 切换基础比例后需要重新计算画布大小
+    }
+
+    function setComposition(compType, btn) {
+        state.currentComp = compType;
+        document.querySelectorAll('.c-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        resizeCanvas(); // 切换构图类型（特别是螺旋）可能影响画布比例
+    }
+
+    function updateStatus() {
+        let ratioText = (state.currentComp === 'spiral') ? `1.618:1 (黄金)` : `${state.baseW}:${state.baseH}`;
+        document.getElementById('current-status').innerText = `比例: ${ratioText} | 构图: ${state.currentComp}`;
+    }
+
+    // --- 核心绘图函数 ---
+    function render() {
+        pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+        if (state.img) {
+            pCtx.save();
+            pCtx.translate(pCanvas.width/2 + state.imgX, pCanvas.height/2 + state.imgY);
+            pCtx.scale(state.imgScale, state.imgScale);
+            pCtx.drawImage(state.img, -state.img.width/2, -state.img.height/2);
+            pCtx.restore();
+        }
+        drawGuides();
+    }
+
+    function drawGuides() {
+        const W = gCanvas.width, H = gCanvas.height;
+        gCtx.clearRect(0, 0, W, H);
+        gCtx.save();
+        
+        // 应用变换 (镜像、旋转)
+        if (state.flipX === -1) { gCtx.translate(W, 0); gCtx.scale(-1, 1); }
+        if (state.flipY === -1) { gCtx.translate(0, H); gCtx.scale(1, -1); }
+        gCtx.translate(W/2, H/2); gCtx.rotate(state.rotation * Math.PI / 180); gCtx.translate(-W/2, -H/2);
+
+        gCtx.strokeStyle = "#ffffff"; gCtx.lineWidth = 1.5; gCtx.globalAlpha = document.getElementById('opacityRange').value;
+        const line = (x1, y1, x2, y2) => { gCtx.beginPath(); gCtx.moveTo(x1, y1); gCtx.lineTo(x2, y2); gCtx.stroke(); };
+
+        switch(state.currentComp) {
+            case 'thirds': 
+                for(let i=1;i<3;i++) { line(W*i/3, 0, W*i/3, H); line(0, H*i/3, W, H*i/3); } break;
+            case 'goldenGrid':
+                for(let i of [0.382, 0.618]) { line(W*i, 0, W*i, H); line(0, H*i, W, H*i); } break;
+            case 'triangle':
+                line(0, 0, W, H); 
+                const tx = (W*H*H)/(W*W+H*H), ty = H-(H*tx/W);
+                line(W, 0, tx, ty); line(0, H, W-tx, H-ty); break;
+            case 'spiral':
+                let sx=0, sy=0, sw=W, sh=H;
+                gCtx.beginPath();
+                for(let i=0; i<8; i++) {
+                    let r = (i%2===0)?sh:sw;
+                    if(i%4===0){ gCtx.arc(sx+r, sy+r, r, Math.PI, 1.5*Math.PI); sx+=r; sw-=r; }
+                    else if(i%4===1){ gCtx.arc(sx+sw-r, sy+r, r, 1.5*Math.PI, 0); sy+=r; sh-=r; }
+                    else if(i%4===2){ gCtx.arc(sx+sw-r, sy+sh-r, r, 0, 0.5*Math.PI); sw-=r; }
+                    else { gCtx.arc(sx+r, sy+sh-r, r, 0.5*Math.PI, Math.PI); sh-=r; }
+                }
+                gCtx.stroke();
+                gCtx.globalAlpha = 0.5; gCtx.beginPath(); gCtx.arc(sx, sy, 4, 0, Math.PI*2); gCtx.fill(); break; // 中心点
+            case 'dynamic':
+                line(0,0,W,H); line(W,0,0,H); line(W/2,0,W/2,H); line(0,H/2,W,H/2); line(0,H,W,0); break;
+            case 'cross':
+                line(W/2,0,W/2,H); line(0,H/2,W,H/2); break;
+            case 'diagonal':
+                line(0,0,W,H); line(W,0,0,H); break;
+            case 'vanishing':
+                line(0,0,W,H); line(W,0,0,H); for(let i=1;i<4;i++){ line(W*i/4,0,W/2,H/2); line(W*i/4,H,W/2,H/2); } break;
+            case 'cinema':
+                const m = (H - (W/2.35))/2; if(m>0){ gCtx.fillStyle="rgba(0,0,0,0.8)"; gCtx.fillRect(0,0,W,m); gCtx.fillRect(0,H-m,W,m); } break;
+        }
+        gCtx.restore();
+    }
+
+    // --- 图像交互处理 ---
+    function setupImageInteractions() {
+        let isDragging = false, lastX, lastY;
+        wrap.onmousedown = (e) => { isDragging=true; lastX=e.clientX; lastY=e.clientY; };
+        window.onmousemove = (e) => { if(isDragging){ state.imgX+=e.clientX-lastX; state.imgY+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; render(); } };
+        window.onmouseup = () => isDragging=false;
+        wrap.onwheel = (e) => { e.preventDefault(); state.imgScale *= (e.deltaY>0?0.9:1.1); render(); };
+        document.getElementById('fileInput').onchange = (e) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const img = new Image();
+                img.onload = () => { state.img=img; state.imgScale=Math.max(pCanvas.width/img.width, pCanvas.height/img.height); state.imgX=state.imgY=0; render(); };
+                img.src=ev.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        };
+    }
+
+    // --- 变换操作 ---
+    function applyTransform(type) {
+        if(type==='flipX') state.flipX*=-1;
+        if(type==='flipY') state.flipY*=-1;
+        if(type==='rotate') state.rotation=(state.rotation+90)%360;
+        render();
+    }
+
+    // --- 导出功能 ---
+    function exportMergedImage() {
+        const outputCanvas = document.createElement('canvas');
+        outputCanvas.width=pCanvas.width; outputCanvas.height=pCanvas.height;
+        const outputCtx = outputCanvas.getContext('2d');
+        outputCtx.drawImage(pCanvas,0,0); // 绘制照片
+        outputCtx.drawImage(gCanvas,0,0); // 绘制辅助线
+        const link = document.createElement('a');
+        link.download=`Composition_${state.currentComp}_${Date.now()}.png`;
+        link.href=outputCanvas.toDataURL();
+        link.click();
+    }
+
+    init();
+</script>
+</body>
+</html>
